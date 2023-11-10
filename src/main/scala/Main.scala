@@ -2,7 +2,134 @@ import java.time.LocalDateTime
 import scala.collection.mutable.TreeMap
 
 @main def hello: Unit =
-  println("Hello world!")
+  val store = new MemoryStore()
+  store.put("PEOPLE", "")
+  store.put("PEOPLE#id", ColumnType.IntType.name)
+  store.put("PEOPLE#name", ColumnType.StringType.name)
+  store.put("PEOPLE#age", ColumnType.IntType.name)
+  store.put("PEOPLE#id#1", "1")
+  store.put("PEOPLE#name#1", "John")
+  store.put("PEOPLE#age#1", "42")
+  store.put("PEOPLE#id#2", "2")
+  store.put("PEOPLE#name#2", "Jane")
+  store.put("PEOPLE#age#2", "24")
+  store.put("PEOPLE#id#3", "3")
+  store.put("PEOPLE#name#3", "Jack")
+  store.put("PEOPLE#age#3", "32")
+  store.put("PEOPLE#id#4", "4")
+  store.put("PEOPLE#name#4", "Jill")
+  store.put("PEOPLE#age#4", "19")
+  store.put("PEOPLE#id#5", "5")
+  store.put("PEOPLE#name#5", "James")
+  store.put("PEOPLE#age#5", "69")
+
+  val tableScan = TableScan("PEOPLE",
+    Option(Filter(FilterExpression.LessOrEqual(ColumnExpression.Column("age"), ColumnExpression.LitInt(40)),
+      None,
+      Option(Range(0, 3,
+        Option(Projection(ColumnExpression.Column("id"),
+          List(ColumnExpression.Column("name")),
+          None
+        )
+      ))
+    ))
+  ))
+
+  val executor = SQLExecutor(tableScan, store)
+  val result = executor.execute()
+  printResult(result)
+
+def printResult(result: Either[DatabaseError, List[Record]]): Unit =
+  result match
+    case Left(error) => println(error)
+    case Right(records) => records.foreach(r =>
+      println(s"key: ${r.key.split("#").last}, value: ${r.value}")
+      )
+
+class SQLExecutor(tableScan: TableScan, store: Store) {
+  def execute(): Either[DatabaseError, List[Record]] = {
+    // chack that the table exists
+    store.get(tableScan.tableName) match
+      case Left(error) => return Left(DatabaseError.TableNotFound(tableScan.tableName))
+      case Right(_) => ()
+
+    // check if the column exists
+    tableScan.next match
+      case Some(filter: Filter) =>
+        val next = filter.next match
+          case Some(range: Range) =>
+            val next = range.next match
+              case Some(projection: Projection) => projection.next
+              val columns = range.next match
+                case Some(projection: Projection) => projection.column :: projection.otherColumns
+                  val columns = projection.column :: projection.otherColumns
+                  columns.foreach {
+                    case ColumnExpression.Column(columnName) =>
+                      store.get(s"${tableScan.tableName}#$columnName") match
+                        case Left(error) => return Left(DatabaseError.ColumnNotFound(columnName))
+                        case Right(_) => ()
+                        case _ => ()
+                      }
+                    case _ => return Left(DatabaseError.InvalidOperation(range))
+                case _ => return Left(DatabaseError.InvalidOperation(range))
+          case _ => return Left(DatabaseError.InvalidOperation(filter))
+      case _ => return Left(DatabaseError.InvalidOperation(tableScan))
+
+      // // retrive the data
+      // val data = store.scan() match
+      //   case Left(error) => return Left(DatabaseError.InvalidOperation(tableScan))
+      //   case Right(data) => data
+
+      // filter the data
+      var filteredData = tableScan.next match
+        case Some(filter: Filter) =>
+          val filterExpression = filter.filter
+          filterExpression match
+            case FilterExpression.Equal(ColumnExpression.Column(columnName), ColumnExpression.LitInt(value)) =>
+              store.getPrefix(s"${tableScan.tableName}#${columnName}#") match
+                case Left(error) => return Left(DatabaseError.InvalidOperation(filter))
+                case Right(data) => data.map(r => if r.value.toInt == value then r else Record("0", "0"))
+            case FilterExpression.NotEqual(ColumnExpression.Column(columnName), ColumnExpression.LitInt(value)) =>
+              store.getPrefix(s"${tableScan.tableName}#${columnName}#") match
+                case Left(error) => return Left(DatabaseError.InvalidOperation(filter))
+                case Right(data) => data.map(r => if r.value.toInt != value then r else Record("0", "0"))
+            case FilterExpression.Greater(ColumnExpression.Column(columnName), ColumnExpression.LitInt(value)) =>
+              store.getPrefix(s"${tableScan.tableName}#${columnName}#") match
+                case Left(error) => return Left(DatabaseError.InvalidOperation(filter))
+                case Right(data) => data.map(r => if r.value.toInt > value then r else Record("0", "0"))
+            case FilterExpression.GreaterOrEqual(ColumnExpression.Column(columnName), ColumnExpression.LitInt(value)) =>
+              store.getPrefix(s"${tableScan.tableName}#${columnName}#") match
+                case Left(error) => return Left(DatabaseError.InvalidOperation(filter))
+                case Right(data) => data.map(r => if r.value.toInt >= value then r else Record("0", "0"))
+            case FilterExpression.Less(ColumnExpression.Column(columnName), ColumnExpression.LitInt(value)) =>
+              store.getPrefix(s"${tableScan.tableName}#${columnName}#") match
+                case Left(error) => return Left(DatabaseError.InvalidOperation(filter))
+                case Right(data) => data.map(r => if r.value.toInt < value then r else Record("0", "0"))
+            case FilterExpression.LessOrEqual(ColumnExpression.Column(columnName), ColumnExpression.LitInt(value)) =>
+              store.getPrefix(s"${tableScan.tableName}#${columnName}#") match
+                case Left(error) => return Left(DatabaseError.InvalidOperation(filter))
+                case Right(data) => data.map(r => if r.value.toInt <= value then r else Record("0", "0"))
+
+
+      // detete the Nones
+      filteredData = filteredData.filter(r => r != Record("0", "0"))
+
+      // limit the data
+      var start = 0
+      var count = 0
+      
+      tableScan.next match
+        case Some(filter: Filter) =>
+          val next = filter.next match
+            case Some(range: Range) => range.start
+              start = range.start
+              count = range.count
+
+
+      val limitedData = filteredData.toList.slice(start, start + count)
+      Right(limitedData.toList)
+  }
+}
 
 // define type aliases.
 // All keys and values are of type String
@@ -13,9 +140,9 @@ case class Record(
     key: Key,
     value: Value,
 		/** timestamp the entry has been recorded in the store */
-    timestamp: LocalDateTime,
+    // timestamp: LocalDateTime,
 		/** indicate if the entry has been deleted */
-    deleted: Boolean
+    // deleted: Boolean
 )
 
 enum StoreError:
@@ -65,24 +192,27 @@ class MemoryStore extends Store:
       .toRight(StoreError.KeyNotFound(key))
       .map(r => data.update(key, ""))
 
+  // TODO: implement the retrieval of all entries
   override def scan(): Either[StoreError, Iterator[Record]] = Right {
-    data.iterator.map((k, v) => Record(k, v, LocalDateTime.now(), false))
+    data.iterator.map((k, v) => Record(k, v))
   }
 
+  // TODO: implement the retrieval of all entries
   override def getFrom(key: Key): Either[StoreError, Iterator[Record]] = Right {
-    data.iteratorFrom(key).map((k, v) => Record(k, v, LocalDateTime.now(), false))
+    data.iteratorFrom(key).map((k, v) => Record(k, v))
   }
 
+  // TODO: implement the retrieval of all entries
   override def getPrefix(prefix: String): Either[StoreError, Iterator[Record]] =
-    Right { data.filter((k, _) => k.startsWith(prefix)).iterator.map((k, v) => Record(k, v, LocalDateTime.now(), false)) }
+    Right { data.filter((k, _) => k.startsWith(prefix)).iterator.map((k, v) => Record(k, v)) }
 
-trait Database:
-	def openOrCreate(tableName: TableName, schema: Schema): Either[DatabaseError, Table]
-	def drop(tableName: TableName): Either[DatabaseError, Unit]
+// trait Database:
+// 	def openOrCreate(tableName: TableName, schema: Schema): Either[DatabaseError, Table]
+// 	def drop(tableName: TableName): Either[DatabaseError, Unit]
 
-trait Table(tableName: TableName, schema: Schema, store: Store):
-	def insert(values: Map[ColumnName, Any]): Either[DatabaseError, Unit]
-	def execute(executionPlan: ExecutionPlan): Either[DatabaseError, Result]
+// trait Table(tableName: TableName, schema: Schema, store: Store):
+// 	def insert(values: Map[ColumnName, Any]): Either[DatabaseError, Unit]
+// 	def execute(executionPlan: ExecutionPlan): Either[DatabaseError, Result]
 
 type TableName = String
 type ColumnName = String
@@ -109,9 +239,9 @@ object ColumnType:
 /** Result of an execution plan */
 case class Result(
   /** available columns in the result */
-	columns: List[ColumnName],
+	columns: List[String],
 	/** rows of the result with their respective values */
-	rows: List[Row]
+	rows: List[Record]
 )	
 
 case class Row(data: Map[ColumnName, RowValue]):
@@ -257,7 +387,7 @@ enum FilterExpression:
   */
 case class Filter(
     filter: FilterExpression,
-    filters: List[FilterExpression],
+    filters: Option[List[FilterExpression]],
     next: Option[Operation]
 ) extends Operation(next)
 
